@@ -454,7 +454,7 @@ with st.expander("📷 图片识文 — 上传作文照片，自动提取题目�
                                      type=["jpg", "jpeg", "png", "bmp"],
                                      key="global_ocr_upload")
         if img_file is not None:
-            st.image(img_file, caption="已上传的图片", use_column_width=True)
+          st.image(img_file, caption="已上传的图片", use_container_width=True)
             if st.button("🔍 开始识别", type="primary", use_container_width=True):
                 if not final_zhipu:
                     st.error("⚠️ 请先配置智谱API Key")
