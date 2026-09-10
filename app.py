@@ -1,5 +1,5 @@
 # app.py
-# AI写作教练 - 图片识文 + 多文体三段式工作流
+# AI写作教练 v3.2 - 图片识文 + 多文体三段式工作流
 
 import streamlit as st
 import base64
@@ -156,6 +156,9 @@ def build_revise_prompt(title, body, diagnosis_text, genre, selected_options,
 
     silent = "自动纠正OCR导致的明显错别字（如同音字、形近字），无需说明。人名地名专有名词保持原样。"
 
+    calib_part = chr(10) + '【校准意见】：' + calibration_note if calibration_note else ''
+    sample_part = chr(10) + '【参考范文】：' + chr(10) + sample_text if sample_text.strip() else ''
+
     prompt = f"""【年级要求】：{get_grade_strategy(grade)}
 【文体】：{genre}
 【题目】：{title}
@@ -164,9 +167,7 @@ def build_revise_prompt(title, body, diagnosis_text, genre, selected_options,
 {marked}
 
 【诊断结果】：
-{diagnosis_text}
-{chr(10) + '【校准意见】：' + calibration_note if calibration_note else ''}
-{chr(10) + '【参考范文】：' + chr(10) + sample_text if sample_text.strip() else ''}
+{diagnosis_text}{calib_part}{sample_part}
 
 【修缮策略】：
 {config['revise_strategy']}
@@ -257,7 +258,6 @@ def generate_diff_html(original, revised):
 # API 调用
 # ============================================================
 def recognize_image(image_bytes, api_key):
-    """图片识文：识别作文题目 + 正文"""
     if not api_key:
         raise ValueError("请先设置智谱API Key")
     compressed = compress_image(image_bytes)
@@ -384,7 +384,8 @@ def init_session():
         "has_diagnosed": False, "comparison_report": None,
         "sample_text": "", "selected_paragraphs": [],
         "grade": "高三", "ideas_output": "", "draft_output": "",
-        "writing_stage": "构思"
+        "writing_stage": "构思",
+        "opt1": False, "opt2": False, "opt3": False, "opt4": False
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -419,7 +420,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🔄 重置所有数据", use_container_width=True):
         reset_all()
-    st.caption("✍️ AI写作教练 v3.1")
+    st.caption("✍️ AI写作教练 v3.2")
 
 # ============================================================
 # 主界面
@@ -443,18 +444,18 @@ with col_grade:
     grade = st.session_state.grade
 
 # ============================================================
-# 📷 图片识文功能区（全局可用，所有阶段通用）
+# 📷 图片识文功能区（全局可用）
 # ============================================================
 with st.expander("📷 图片识文 — 上传作文照片，自动提取题目和原文", expanded=False):
-    st.caption("识别出的题目和正文会自动填入下方各阶段的输入框。识别后请务必手动检查一遍，如有错误可直接修改。")
+    st.caption("识别出的题目和正文会自动填入下方各阶段的输入框。识别后请务必手动检查一遍。")
 
     col_up, col_res = st.columns([1, 1])
     with col_up:
-        img_file = st.file_uploader("上传作文照片（含题目和正文）", 
+        img_file = st.file_uploader("上传作文照片（含题目和正文）",
                                      type=["jpg", "jpeg", "png", "bmp"],
                                      key="global_ocr_upload")
         if img_file is not None:
-          st.image(img_file, caption="已上传的图片", use_container_width=True)
+            st.image(img_file, caption="已上传的图片", use_container_width=True)
             if st.button("🔍 开始识别", type="primary", use_container_width=True):
                 if not final_zhipu:
                     st.error("⚠️ 请先配置智谱API Key")
@@ -471,20 +472,19 @@ with st.expander("📷 图片识文 — 上传作文照片，自动提取题目�
     with col_res:
         st.markdown("**✏️ 识别结果（可编辑）**")
         edit_title = st.text_area(
-            "📌 作文题目", 
-            value=st.session_state.ocr_title, 
-            height=80, 
+            "📌 作文题目",
+            value=st.session_state.ocr_title,
+            height=80,
             key="global_ocr_title",
-            placeholder="识别出的题目会显示在这里，可手动修改"
+            placeholder="识别出的题目会显示在这里"
         )
         edit_body = st.text_area(
-            "📄 作文正文", 
-            value=st.session_state.ocr_body, 
-            height=250, 
+            "📄 作文正文",
+            value=st.session_state.ocr_body,
+            height=250,
             key="global_ocr_body",
-            placeholder="识别出的正文会显示在这里，可手动修改"
+            placeholder="识别出的正文会显示在这里"
         )
-        # 同步回 session_state
         st.session_state.ocr_title = edit_title
         st.session_state.ocr_body = edit_body
 
@@ -504,14 +504,13 @@ with st.expander("📷 图片识文 — 上传作文照片，自动提取题目�
             else:
                 st.error(f"❌ {msg}")
 
-    # 状态提示
     if st.session_state.get("current_title"):
-        st.info(f"📎 当前已锁定的文本：**{st.session_state.current_title[:30]}...**")
+        st.info(f"📎 当前已锁定：**{st.session_state.current_title[:40]}...**")
 
 st.markdown("---")
 
 # ============================================================
-# 写作阶段
+# 写作阶段切换
 # ============================================================
 stage_options = ["🧠 构思破题", "✍️ 起草扩写", "📊 诊断修缮"]
 stage_map = {"🧠 构思破题": "构思", "✍️ 起草扩写": "起草", "📊 诊断修缮": "修缮"}
@@ -529,10 +528,10 @@ if st.session_state.writing_stage == "构思":
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        title = st.text_input("题目/话题", 
+        title = st.text_input("题目/话题",
                               value=st.session_state.get("current_title") or st.session_state.ocr_title,
-                              placeholder="输入题目或写作话题（也可以从上方图片识文自动带入）")
-        hint = st.text_area("补充说明（可选）", placeholder="例如：需要包含辩证思考 / 希望偏向抒情")
+                              placeholder="输入题目或写作话题")
+        hint = st.text_area("补充说明（可选）", placeholder="例如：需要包含辩证思考")
         if st.button("🚀 生成构思", type="primary", use_container_width=True):
             if not title.strip():
                 st.error("请输入题目")
@@ -559,10 +558,10 @@ elif st.session_state.writing_stage == "起草":
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        title = st.text_input("题目/话题", 
+        title = st.text_input("题目/话题",
                               value=st.session_state.get("current_title") or st.session_state.ocr_title)
-        keywords = st.text_area("思路/关键词", height=150, 
-                                placeholder="输入核心想法、关键词或提纲（也可以直接把上方识别的原文粘贴进来作为参考）")
+        keywords = st.text_area("思路/关键词", height=150,
+                                placeholder="输入核心想法、关键词或提纲")
         style = st.selectbox("目标文风", ["标准", "批判犀利", "文学抒情", "逻辑严密"], index=0)
         if st.button("✍️ 生成草稿", type="primary", use_container_width=True):
             if not title.strip():
@@ -585,7 +584,7 @@ elif st.session_state.writing_stage == "起草":
         if st.session_state.draft_output:
             st.markdown("**📝 草稿预览**")
             st.text_area("草稿", value=st.session_state.draft_output, height=350)
-            st.info("💡 草稿已自动保存，可切换到「诊断修缮」阶段进行评分和精修")
+            st.info("💡 草稿已自动保存，可切换到「诊断修缮」阶段")
 
 # ============================================================
 # 阶段三：诊断修缮
@@ -600,7 +599,7 @@ else:
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown("**📷 局部上传识别**")
-            st.caption("也可以直接使用顶部「图片识文」功能区，效果相同")
+            st.caption("也可以直接使用顶部「图片识文」功能区")
             uploaded = st.file_uploader("上传作文照片", type=["jpg", "jpeg", "png", "bmp"], key="local_ocr")
             if uploaded is not None:
                 if st.button("🔍 OCR识别"):
@@ -616,8 +615,8 @@ else:
                             except Exception as e:
                                 st.error(f"识别失败：{e}")
         with col2:
-            title = st.text_area("题目/话题", value=st.session_state.ocr_title, height=80)
-            body = st.text_area("正文", value=st.session_state.ocr_body, height=300)
+            title = st.text_area("题目/话题", value=st.session_state.ocr_title, height=80, key="diag_title")
+            body = st.text_area("正文", value=st.session_state.ocr_body, height=300, key="diag_body")
             st.session_state.ocr_title = title
             st.session_state.ocr_body = body
 
@@ -681,7 +680,8 @@ else:
                     s = detail.get(label, 0)
                     with cols[i]:
                         st.metric(label, f"{s}/{total}")
-                        st.progress(min(max(s / total if total > 0 else 0, 0.0), 1.0))
+                        prog_val = min(max(s / total if total > 0 else 0, 0.0), 1.0)
+                        st.progress(prog_val)
 
                 st.divider()
                 c1, c2 = st.columns(2)
@@ -754,13 +754,17 @@ else:
             btn_c1, btn_c2 = st.columns(2)
             with btn_c1:
                 if st.button("☑️ 全选", use_container_width=True):
-                    st.session_state.opt1 = st.session_state.opt2 = True
-                    st.session_state.opt3 = st.session_state.opt4 = True
+                    st.session_state.opt1 = True
+                    st.session_state.opt2 = True
+                    st.session_state.opt3 = True
+                    st.session_state.opt4 = True
                     st.rerun()
             with btn_c2:
                 if st.button("⬜ 清空", use_container_width=True):
-                    st.session_state.opt1 = st.session_state.opt2 = False
-                    st.session_state.opt3 = st.session_state.opt4 = False
+                    st.session_state.opt1 = False
+                    st.session_state.opt2 = False
+                    st.session_state.opt3 = False
+                    st.session_state.opt4 = False
                     st.rerun()
 
             custom_text = st.text_area("自定义指令（可选）", height=60,
