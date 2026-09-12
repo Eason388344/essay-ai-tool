@@ -933,7 +933,18 @@ with tab3:
                 st.session_state[f"para_{i}"] = False
 
         # ===== 快捷操作按钮（全部移出 form） =====
-        st.markdown("**① 快捷预设**")
+               st.markdown("**① 快捷预设**")
+        
+        # ===== 回调函数定义 =====
+        def toggle_all_options(state_val):
+            for key in ["opt1", "opt2", "opt3", "opt4"]:
+                st.session_state[key] = state_val
+
+        def toggle_all_paragraphs(state_val, num_paras):
+            for idx in range(num_paras):
+                st.session_state[f"para_{idx}"] = state_val
+        # ========================
+
         col_o1, col_o2 = st.columns(2)
         with col_o1:
             st.checkbox("① 提升思维深度", key="opt1")
@@ -942,27 +953,40 @@ with tab3:
             st.checkbox("③ 精炼语言表达", key="opt3")
             st.checkbox("④ 充实论据阐释", key="opt4")
 
+        # 使用 on_click 参数替代原来的 if st.button 逻辑
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            if st.button("☑️ 全选方向", key="btn_all_opt", use_container_width=True):
-                for k in ["opt1", "opt2", "opt3", "opt4"]:
-                    st.session_state[k] = True
-                st.rerun()
+            st.button(
+                "☑️ 全选方向", 
+                key="btn_all_opt", 
+                on_click=toggle_all_options, 
+                args=(True,), 
+                use_container_width=True
+            )
         with c2:
-            if st.button("⬜ 清空方向", key="btn_clear_opt", use_container_width=True):
-                for k in ["opt1", "opt2", "opt3", "opt4"]:
-                    st.session_state[k] = False
-                st.rerun()
+            st.button(
+                "⬜ 清空方向", 
+                key="btn_clear_opt", 
+                on_click=toggle_all_options, 
+                args=(False,), 
+                use_container_width=True
+            )
         with c3:
-            if st.button("☑️ 全选段落", key="btn_all_para", use_container_width=True):
-                for i in range(len(paragraphs)):
-                    st.session_state[f"para_{i}"] = True
-                st.rerun()
+            st.button(
+                "☑️ 全选段落", 
+                key="btn_all_para", 
+                on_click=toggle_all_paragraphs, 
+                args=(True, len(paragraphs)), 
+                use_container_width=True
+            )
         with c4:
-            if st.button("⬜ 清空段落", key="btn_clear_para", use_container_width=True):
-                for i in range(len(paragraphs)):
-                    st.session_state[f"para_{i}"] = False
-                st.rerun()
+            st.button(
+                "⬜ 清空段落", 
+                key="btn_clear_para", 
+                on_click=toggle_all_paragraphs, 
+                args=(False, len(paragraphs)), 
+                use_container_width=True
+            )
 
         st.divider()
 
