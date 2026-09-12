@@ -385,7 +385,6 @@ STYLE_HINT = {
 }
 
 def generate_outline(title, genre, grade_level, style, api_key):
-    """第一步：生成破题角度 + 提纲（不写全文）"""
     prompt = f"""你是资深高中语文教师。请为下面这道作文题设计一份完整的构思提纲。
 
 【作文题目】：{title}
@@ -426,7 +425,6 @@ def generate_outline(title, genre, grade_level, style, api_key):
     return response.choices[0].message.content
 
 def generate_model_essay(title, genre, grade_level, style, target_words, outline, api_key):
-    """第二步：基于提纲写出完整范文"""
     prompt = f"""你是资深高中语文教师，请根据下面的构思提纲，写一篇完整的{genre}高分范文。
 
 【作文题目】：{title}
@@ -460,7 +458,6 @@ def generate_model_essay(title, genre, grade_level, style, target_words, outline
     return response.choices[0].message.content
 
 def generate_essay_directly(title, genre, grade_level, style, target_words, api_key):
-    """一步到位：跳过提纲，直接生成范文"""
     prompt = f"""你是资深高中语文教师，请为下面的作文题写一篇完整的{genre}范文。
 
 【作文题目】：{title}
@@ -526,7 +523,7 @@ def reset_all():
         del st.session_state[key]
     st.rerun()
 
-# ===== 步骤条（按实际状态判断，不再依赖 st.session_state.step） =====
+# ===== 步骤条 =====
 def render_step_bar():
     if st.session_state.get("has_revised"):
         current = 3
@@ -598,6 +595,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     col1, col2 = st.columns([1, 1])
     with col1:
+        # 这里是多图上传核心代码，已修改为可接受多张图片
         uploaded_files = st.file_uploader(
             "上传作文照片（可多选，按顺序自动拼接）",
             type=["jpg", "jpeg", "png", "bmp"],
@@ -716,50 +714,6 @@ with tab1:
                 log_action("文本确认", f"字数:{len(body)}")
             else:
                 st.error(f"❌ {msg}")
-    with col2:
-        st.markdown("**✏️ 手动编辑区**")
-        genre = st.selectbox(
-            "文体",
-            ["议论文", "记叙文", "说明文", "书信", "其他"],
-            key="genre"
-        )
-        ocr_v = st.session_state.ocr_version
-        title = st.text_area(
-            "作文题目",
-            value=st.session_state.ocr_title,
-            height=80,
-            key=f"t1_title_{ocr_v}"
-        )
-        body = st.text_area(
-            "作文正文",
-            value=st.session_state.ocr_body,
-            height=300,
-            key=f"t1_body_{ocr_v}"
-        )
-        # 同步回 session_state（保证跨 tab 一致）
-        st.session_state.ocr_title = title
-        st.session_state.ocr_body = body
-
-        if body.strip():
-            is_valid, msg = validate_input(title, body)
-            if is_valid:
-                st.success(msg)
-            else:
-                st.warning(f"⚠️ {msg}")
-
-        if st.button("📌 确认文本并进入诊断", type="primary", use_container_width=True, key="t1_confirm"):
-            is_valid, msg = validate_input(title, body)
-            if is_valid:
-                st.session_state.current_title = title
-                st.session_state.current_body = body
-                # 清空上一次的段落勾选状态
-                for k in list(st.session_state.keys()):
-                    if k.startswith("para_"):
-                        del st.session_state[k]
-                st.success("✅ 文本已锁定！请切换至「多维诊断」标签")
-                log_action("文本确认", f"字数:{len(body)}")
-            else:
-                st.error(f"❌ {msg}")
 
 # ========== TAB2: 诊断 ==========
 with tab2:
@@ -828,9 +782,9 @@ with tab2:
             st.divider()
             st.subheader("🤝 人机协同校准")
             with st.form("calibration_form"):
-                dim = st.selectbox("有异议的维度", ["立意", "结构", "语言", "论据", "总分"])
-                deviation = st.radio("你认为AI评分", ["偏高", "偏低", "基本准确"])
-                comment = st.text_area("补充说明", placeholder="例如：立意虽然扣题，但深度不足")
+                dim = st.selectbox("有异议的维度", ["立意", "结构", "语言", "论据", "总分"], key="calib_dim")
+                deviation = st.radio("你认为AI评分", ["偏高", "偏低", "基本准确"], key="calib_dev")
+                comment = st.text_area("补充说明", placeholder="例如：立意虽然扣题，但深度不足", key="calib_comment")
                 submit_calib = st.form_submit_button("🔄 执行校准")
             if submit_calib:
                 if not final_deepseek:
