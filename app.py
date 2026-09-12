@@ -598,23 +598,124 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     col1, col2 = st.columns([1, 1])
     with col1:
-        uploaded_file = st.file_uploader("上传作文照片", type=["jpg", "jpeg", "png", "bmp"], key="t1_uploader")
-        if uploaded_file is not None:
-            if st.button("🔍 识别文字 (OCR)", type="primary", key="t1_ocr_btn"):
+        uploaded_files = st.file_uploader(
+            "上传作文照片（可多选，按顺序自动拼接）",
+            type=["jpg", "jpeg", "png", "bmp"],
+            accept_multiple_files=True,
+            key="t1_uploader"
+        )
+
+        if uploaded_files:
+            n = len(uploaded_files)
+            st.caption(f"📎 已选择 **{n}** 张图片（识别时按上传顺序拼接）")
+
+            # 缩略图预览（最多每行 3 张）
+            preview_cols = st.columns(min(n, 3))
+            for idx, f in enumerate(uploaded_files):
+                with preview_cols[idx % 3]:
+                    st.image(f, caption=f"第 {idx+1} 张", use_container_width=True)
+
+            c_up, c_clear = st.columns([3, 1])
+            with c_up:
+                run_ocr = st.button("🔍 开始识别全部", type="primary", key="t1_ocr_btn", use_container_width=True)
+            with c_clear:
+                if st.button("⬜ 清空识别结果", key="t1_clear_ocr", use_container_width=True):
+                    st.session_state.ocr_title = ""
+                    st.session_state.ocr_body = ""
+                    st.session_state.ocr_version += 1
+                    st.rerun()
+
+            if run_ocr:
                 if not final_zhipu:
                     st.error("⚠️ 请配置智谱API Key")
                 else:
-                    with st.spinner("正在识别..."):
-                        try:
-                            result = recognize_image(uploaded_file.getvalue(), final_zhipu)
-                            st.session_state.ocr_title = result["title"]
-                            st.session_state.ocr_body = result["body"]
-                            st.session_state.ocr_version += 1   # 强制刷新下方输入框
-                            st.success("✅ 识别完成！")
-                            log_action("OCR识别", "成功")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"识别失败: {e}")
+                    titles = []
+                    bodies = []
+                    progress = st.progress(0, text="准备识别...")
+
+                    try:
+                        for idx, f in enumerate(uploaded_files):
+                            progress.progress(
+                                idx / n,
+                                text=f"识别第 {idx+1}/{n} 张…"
+                            )
+                            try:
+                                result = recognize_image(f.getvalue(), final_zhipu)
+                                t = (result.get("title") or "").strip()
+                                b = (result.get("body") or "").strip()
+                                # 题目只取第一张识别到的，且跳过无效值
+                                if not titles and t and t != "未识别到题目":
+                                    titles.append(t)
+                                if b:
+                                    bodies.append(b)
+                            except Exception as e:
+                                st.warning(f"第 {idx+1} 张识别失败：{e}，已跳过")
+                                continue
+
+                        progress.progress(1.0, text="识别完成")
+
+                        merged_title = titles[0] if titles else "未识别到题目"
+                        merged_body = "\n\n".join(bodies) if bodies else ""
+
+                        st.session_state.ocr_title = merged_title
+                        st.session_state.ocr_body = merged_body
+                        st.session_state.ocr_version += 1
+                        st.success(
+                            f"✅ 已识别 {len(bodies)}/{n} 张，共 {len(merged_body)} 字，已填入右侧编辑区"
+                        )
+                        log_action(
+                            "OCR识别(多图)",
+                            f"张数:{n}, 成功:{len(bodies)}, 总字数:{len(merged_body)}"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"识别失败: {e}")
+
+    with col2:
+        st.markdown("**✏️ 手动编辑区**")
+        genre = st.selectbox(
+            "文体",
+            ["议论文", "记叙文", "说明文", "书信", "其他"],
+            key="genre"
+        )
+
+        ocr_v = st.session_state.ocr_version
+        title = st.text_area(
+            "作文题目",
+            value=st.session_state.ocr_title,
+            height=80,
+            key=f"t1_title_{ocr_v}"
+        )
+        body = st.text_area(
+            "作文正文",
+            value=st.session_state.ocr_body,
+            height=300,
+            key=f"t1_body_{ocr_v}"
+        )
+        # 同步回 session_state（保证跨 tab 一致）
+        st.session_state.ocr_title = title
+        st.session_state.ocr_body = body
+
+        if body.strip():
+            is_valid, msg = validate_input(title, body)
+            if is_valid:
+                st.success(msg)
+            else:
+                st.warning(f"⚠️ {msg}")
+
+        if st.button("📌 确认文本并进入诊断", type="primary", use_container_width=True, key="t1_confirm"):
+            is_valid, msg = validate_input(title, body)
+            if is_valid:
+                st.session_state.current_title = title
+                st.session_state.current_body = body
+                # 清空上一篇文章的段落勾选状态
+                for k in list(st.session_state.keys()):
+                    if k.startswith("para_"):
+                        del st.session_state[k]
+                st.success("✅ 文本已锁定！请切换至「多维诊断」标签")
+                log_action("文本确认", f"字数:{len(body)}")
+            else:
+                st.error(f"❌ {msg}")
     with col2:
         st.markdown("**✏️ 手动编辑区**")
         genre = st.selectbox(
