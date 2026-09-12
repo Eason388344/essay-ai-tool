@@ -79,6 +79,44 @@ def validate_input(title, body):
     if chinese_ratio < 0.3:
         return False, "识别内容中汉字占比过低，请检查OCR结果或手动输入"
     return True, f"✅ 校验通过：正文{word_count}字，汉字占比{chinese_ratio:.1%}"
+# ====================== TXT 解析（跳过 OCR） ==============================
+def parse_txt_essay(raw_text):
+    """
+    从 txt 文本中解析出【题目】和【正文】。
+    支持 3 种格式：
+    1) ===题目=== ... ===正文=== ...
+    2) 【题目】：xxx  【正文】：xxx
+    3) 第一行非空行作为题目，其余作为正文
+    返回 (title, body)
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return "", ""
+
+    # 优先匹配显式标记
+    patterns = [
+        (r'===\s*题目\s*===\s*(.*?)\s*===\s*正文\s*===\s*(.*)', re.DOTALL),
+        (r'【\s*题目\s*】[：:]\s*(.*?)\n+【\s*正文\s*】[：:]\s*(.*)', re.DOTALL),
+        (r'^题目[：:]\s*(.*?)\n+正文[：:]\s*(.*)', re.DOTALL | re.MULTILINE),
+    ]
+    for pat, flags in patterns:
+        m = re.search(pat, text, flags)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+
+    # 无标记：第一行非空当题目，其余当正文
+    lines = text.split('\n')
+    title_line = ""
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.strip():
+            title_line = line.strip()
+            body_start = i + 1
+            break
+    # 去掉"标题：" / "题目：" 之类前缀
+    title_line = re.sub(r'^(标题|题目)[：:]\s*', '', title_line)
+    body = '\n'.join(lines[body_start:]).strip()
+    return title_line, body
 
 # ====================== 段落分割 ==============================
 def split_paragraphs(text):
@@ -590,12 +628,45 @@ with st.sidebar:
 tab1, tab2, tab3, tab4 = st.tabs(
     ["📄 作文录入", "📊 多维诊断", "✍️ 智能修缮", "📖 范文生成"]
 )
-
 # ========== TAB1: 录入 ==========
 with tab1:
     col1, col2 = st.columns([1, 1])
     with col1:
-        # 这里是多图上传核心代码，已修改为可接受多张图片
+
+        # ---------- ① 上传 TXT（跳过 OCR） ----------
+        st.markdown("**📄 方式一：上传 TXT 文件（跳过 OCR）**")
+        txt_file = st.file_uploader(
+            "上传作文 txt 文件",
+            type=["txt"],
+            key="t1_txt_uploader",
+            help="txt 第一行非空内容作为题目，其余作为正文；也支持 ===题目=== / ===正文=== 标记格式"
+        )
+        if txt_file is not None:
+            if st.button("📥 读取 TXT 内容", type="primary", key="t1_read_txt", use_container_width=True):
+                try:
+                    raw_bytes = txt_file.read()
+                    try:
+                        txt_content = raw_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        txt_content = raw_bytes.decode("gbk", errors="ignore")
+
+                    t, b = parse_txt_essay(txt_content)
+                    if not b:
+                        st.warning("⚠️ 未能从 txt 中解析出正文，请检查文件内容")
+                    else:
+                        st.session_state.ocr_title = t
+                        st.session_state.ocr_body = b
+                        st.session_state.ocr_version += 1
+                        st.success(f"✅ 已读取：题目 {len(t)} 字，正文 {len(b)} 字，已填入右侧编辑区")
+                        log_action("TXT读取", f"题目:{t[:20]}, 正文字数:{len(b)}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"读取失败: {e}")
+
+        st.divider()
+
+        # ---------- ② 上传图片（走 OCR） ----------
+        st.markdown("**📷 方式二：上传作文照片（走 OCR）**")
         uploaded_files = st.file_uploader(
             "上传作文照片（可多选，按顺序自动拼接）",
             type=["jpg", "jpeg", "png", "bmp"],
@@ -607,7 +678,6 @@ with tab1:
             n = len(uploaded_files)
             st.caption(f"📎 已选择 **{n}** 张图片（识别时按上传顺序拼接）")
 
-            # 缩略图预览（最多每行 3 张）
             preview_cols = st.columns(min(n, 3))
             for idx, f in enumerate(uploaded_files):
                 with preview_cols[idx % 3]:
@@ -641,7 +711,6 @@ with tab1:
                                 result = recognize_image(f.getvalue(), final_zhipu)
                                 t = (result.get("title") or "").strip()
                                 b = (result.get("body") or "").strip()
-                                # 题目只取第一张识别到的，且跳过无效值
                                 if not titles and t and t != "未识别到题目":
                                     titles.append(t)
                                 if b:
@@ -669,6 +738,7 @@ with tab1:
                     except Exception as e:
                         st.error(f"识别失败: {e}")
 
+    # ---------- 右侧：手动编辑区（不用改） ----------
     with col2:
         st.markdown("**✏️ 手动编辑区**")
         genre = st.selectbox(
@@ -690,7 +760,6 @@ with tab1:
             height=300,
             key=f"t1_body_{ocr_v}"
         )
-        # 同步回 session_state（保证跨 tab 一致）
         st.session_state.ocr_title = title
         st.session_state.ocr_body = body
 
@@ -706,7 +775,6 @@ with tab1:
             if is_valid:
                 st.session_state.current_title = title
                 st.session_state.current_body = body
-                # 清空上一篇文章的段落勾选状态
                 for k in list(st.session_state.keys()):
                     if k.startswith("para_"):
                         del st.session_state[k]
@@ -714,6 +782,7 @@ with tab1:
                 log_action("文本确认", f"字数:{len(body)}")
             else:
                 st.error(f"❌ {msg}")
+
 
 # ========== TAB2: 诊断 ==========
 with tab2:
