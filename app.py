@@ -371,6 +371,126 @@ def generate_diff_html(original, revised):
         elif line.startswith('  '):
             html_parts.append(line[2:])
     return '<br>'.join(html_parts)
+    # ====================== 范文生成（新增） ==============================
+GENRE_GUIDE = {
+    "议论文": "中心论点鲜明，分论点递进或并列，论据充分（事实+道理论据），论证有层次",
+    "记叙文": "选材典型，细节生动，情感真挚，叙事有波澜（起承转合）",
+    "散文": "形散神聚，语言优美，情感细腻，意象丰富，有哲思升华",
+}
+
+STYLE_HINT = {
+    "稳健理性": "语言克制、逻辑清晰、理性思辨",
+    "批判犀利": "观点锋利、善用反问/对比、思辨张力强",
+    "文学抒情": "修辞丰富、意象优美、情感饱满",
+    "逻辑严密": "因果链清晰、善用'由此可见/究其本质'等连接词",
+}
+
+def generate_outline(title, genre, grade_level, style, api_key):
+    """第一步：生成破题角度 + 提纲（不写全文）"""
+    prompt = f"""你是资深高中语文教师。请为下面这道作文题设计一份完整的构思提纲。
+
+【作文题目】：{title}
+【文体】：{genre}
+【年级】：{grade_level}
+【目标文风】：{STYLE_HINT.get(style, style)}
+【文体要求】：{GENRE_GUIDE.get(genre, "")}
+
+请严格按以下格式输出（纯文本，不要 JSON，不要开场白）：
+
+一、破题立意
+（用 1-2 句话点明最佳立意方向，要有深度，不要套话）
+
+二、备选角度（3 个）
+1. ...
+2. ...
+3. ...
+（每个角度一句话）
+
+三、推荐结构
+开头：（怎么开，30字以内说明）
+主体段一：（分论点/事件 + 用什么素材）
+主体段二：（分论点/事件 + 用什么素材）
+主体段三：（分论点/事件 + 用什么素材）
+结尾：（怎么收，30字以内说明）
+
+四、可用素材（3-5 个）
+- ...
+- ...
+"""
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+        max_tokens=1200
+    )
+    return response.choices[0].message.content
+
+def generate_model_essay(title, genre, grade_level, style, target_words, outline, api_key):
+    """第二步：基于提纲写出完整范文"""
+    prompt = f"""你是资深高中语文教师，请根据下面的构思提纲，写一篇完整的{genre}高分范文。
+
+【作文题目】：{title}
+【文体】：{genre}
+【年级】：{grade_level}
+【文风】：{STYLE_HINT.get(style, style)}
+【字数要求】：{target_words}字左右
+
+【构思提纲】：
+{outline}
+
+【写作要求】：
+1. 开头直接入题，抓人，不要空话套话
+2. 主体紧扣提纲，段与段之间要有逻辑推进
+3. 语言符合"{style}"风格
+4. 结尾有力，呼应开头，升华主题
+5. 段落分明，每段之间用空行分隔
+
+【输出要求】：
+只输出范文正文。不要写"范文""标题"之类的前缀，不要任何分析或点评。"""
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": "你是资深高中语文教师，擅长写出高考一类文水准的范文。"},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.8,
+        max_tokens=2500
+    )
+    return response.choices[0].message.content
+
+def generate_essay_directly(title, genre, grade_level, style, target_words, api_key):
+    """一步到位：跳过提纲，直接生成范文"""
+    prompt = f"""你是资深高中语文教师，请为下面的作文题写一篇完整的{genre}范文。
+
+【作文题目】：{title}
+【文体】：{genre}
+【年级】：{grade_level}
+【文风】：{STYLE_HINT.get(style, style)}
+【字数要求】：{target_words}字左右
+【文体要求】：{GENRE_GUIDE.get(genre, "")}
+
+【写作要求】：
+1. 开头直接入题，抓人
+2. 主体有层次、有深度
+3. 语言符合"{style}"风格
+4. 结尾有力，升华主题
+5. 段落分明，每段之间用空行分隔
+
+【输出要求】：
+只输出范文正文。不要写"范文""标题"之类的前缀，不要任何分析或点评。"""
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": "你是资深高中语文教师，擅长写出高考一类文水准的范文。"},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.8,
+        max_tokens=2500
+    )
+    return response.choices[0].message.content
 
 # ============================================================
 # #################### Streamlit UI ###########################
