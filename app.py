@@ -926,15 +926,15 @@ with tab3:
             if sample_textarea != st.session_state.sample_text:
                 st.session_state.sample_text = sample_textarea
 
-        # ===== 段落预处理（form 外，确保 para_i 已初始化） =====
+               # ===== 段落预处理（form 外，确保 para_i 已初始化） =====
         paragraphs = split_paragraphs(st.session_state.current_body)
         for i in range(len(paragraphs)):
             if f"para_{i}" not in st.session_state:
                 st.session_state[f"para_{i}"] = False
 
         # ===== 快捷操作按钮（全部移出 form） =====
-               st.markdown("**① 快捷预设**")
-        
+        st.markdown("**① 快捷预设**")
+
         # ===== 回调函数定义 =====
         def toggle_all_options(state_val):
             for key in ["opt1", "opt2", "opt3", "opt4"]:
@@ -943,8 +943,8 @@ with tab3:
         def toggle_all_paragraphs(state_val, num_paras):
             for idx in range(num_paras):
                 st.session_state[f"para_{idx}"] = state_val
-        # ========================
 
+        # ========================
         col_o1, col_o2 = st.columns(2)
         with col_o1:
             st.checkbox("① 提升思维深度", key="opt1")
@@ -952,7 +952,6 @@ with tab3:
         with col_o2:
             st.checkbox("③ 精炼语言表达", key="opt3")
             st.checkbox("④ 充实论据阐释", key="opt4")
-
         # 使用 on_click 参数替代原来的 if st.button 逻辑
         c1, c2, c3, c4 = st.columns(4)
         with c1:
