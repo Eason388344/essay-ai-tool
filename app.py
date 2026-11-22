@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import html
 import base64
 import time
 import json
@@ -10,6 +11,8 @@ from datetime import datetime
 from io import BytesIO
 from PIL import Image
 from openai import OpenAI
+
+import prompts_config as pc
 
 # ============================================================
 # ⚠️ API Key 配置（仅从 secrets 读取，不在界面回显）
@@ -181,9 +184,11 @@ def extract_json(text):
     try:
         try:
             import json_repair
+        except ImportError:
+            pass  # 未安装时走下面的正则提取兜底
+        else:
+            # repair_json 的异常不再静默吞掉，交由外层统一报出
             return json_repair.repair_json(text)
-        except (ImportError, Exception):
-            pass
         text = text.strip()
         text = re.sub(r'^```json\s*', '', text)
         text = re.sub(r'^```\s*', '', text)
@@ -196,45 +201,36 @@ def extract_json(text):
     except Exception as e:
         raise ValueError(f"JSON解析失败: {e}")
 
-def single_diagnose(title, body, api_key, temperature=0.3):
-    system_prompt = """你是一位资深高考作文阅卷老师。请严格按以下标准对作文进行评分（满分60分）：
-
-【审题立意】（20分）：是否精准理解题目核心？是否存在概念置换、偷换主语？
-【结构与逻辑】（15分）：层次是否分明？论证是否严密？
-【语言表达】（15分）：是否流畅精准？有无语病？
-【论据与内容】（10分）：素材是否充实？阐释是否深入？
-
-请按以下JSON格式输出（确保是有效JSON，不要包含其他废话）：
-{
-  "score": 总分(整数),
-  "detail": {"立意": 分数, "结构": 分数, "语言": 分数, "论据": 分数},
-  "strengths": ["优点1(需附带原文证据)", "优点2", "优点3"],
-  "weaknesses": ["不足1(需附带原文证据)", "不足2", "不足3"],
-  "summary": "一句话总评(20字以内)"
-}"""
+def call_deepseek_json(prompt, api_key, temperature=0.3, max_tokens=800,
+                       system=None, model="deepseek-chat"):
+    """调用 DeepSeek 并解析 JSON；system 缺省时把 prompt 作为 user 消息。"""
+    messages = ([{"role": "system", "content": system}] if system else []) + [
+        {"role": "user", "content": prompt}
+    ]
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     try:
         response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"作文题目：{title}\n\n学生作文：{body}"}
-            ],
+            model=model,
+            messages=messages,
             temperature=temperature,
-            max_tokens=800
+            max_tokens=max_tokens
         )
-        raw = response.choices[0].message.content
-        return json.loads(extract_json(raw))
+        return json.loads(extract_json(response.choices[0].message.content))
     except Exception as e:
-        raise RuntimeError(f"诊断API调用失败: {e}")
+        raise RuntimeError(f"API调用失败: {e}")
 
-def diagnose_with_reliability(title, body, api_key, runs=3):
+def single_diagnose(title, body, api_key, temperature=0.3, genre="议论文"):
+    system_prompt = pc.get_genre_config(genre)["diagnose_prompt"]
+    prompt = f"作文题目：{title}\n\n学生作文：{body}"
+    return call_deepseek_json(prompt, api_key, temperature, 800, system=system_prompt)
+
+def diagnose_with_reliability(title, body, api_key, runs=3, genre="议论文", grade="高三"):
     raw_results = []
     temps = [0.1, 0.3, 0.5] * ((runs // 3) + 1)
     for i in range(runs):
         try:
             temp = temps[i % len(temps)]
-            raw = single_diagnose(title, body, api_key, temp)
+            raw = single_diagnose(title, body, api_key, temp, genre)
             raw_results.append(raw)
         except Exception as e:
             st.warning(f"第{i+1}次诊断调用失败: {e}")
@@ -251,30 +247,24 @@ def diagnose_with_reliability(title, body, api_key, runs=3):
         "is_reliable": std_score <= 2.0,
         "runs": len(raw_results)
     }
+    main_diagnosis["genre"] = genre
+    main_diagnosis["grade"] = grade
     return main_diagnosis
 
-def quick_diagnose(title, body, api_key):
-    return single_diagnose(title, body, api_key, temperature=0.3)
+def quick_diagnose(title, body, api_key, genre="议论文"):
+    return single_diagnose(title, body, api_key, temperature=0.3, genre=genre)
 
 # ====================== 人机校准 ==============================
-def recalibrate_score(title, body, original_diagnosis, dimension, deviation, comment, api_key):
+def recalibrate_score(title, body, original_diagnosis, dimension, deviation, comment, api_key, genre="议论文"):
+    dims = list(pc.get_genre_dimensions(genre).keys())
+    detail_example = ", ".join(f'"{k}": 分数' for k in dims)
     prompt = f"""【作文题目】：{title}
 【原文】：{body}
 【AI原始评分】：{json.dumps(original_diagnosis, ensure_ascii=False)}
 【教师反馈】：维度"{dimension}"认为AI评分 {deviation}，补充说明：{comment}
 请重新审视这篇作文。输出新的评分JSON：
-{{"score": 总分, "detail": {{"立意": 分数, "结构": 分数, "语言": 分数, "论据": 分数}}, "summary": "校准后的总评"}}"""
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=600
-        )
-        return json.loads(extract_json(response.choices[0].message.content))
-    except Exception as e:
-        raise RuntimeError(f"校准失败: {e}")
+{{"score": 总分, "detail": {{{detail_example}}}, "summary": "校准后的总评"}}"""
+    return call_deepseek_json(prompt, api_key, 0.2, 600)
 
 # ====================== 修改计划（思维链） ==============================
 def get_revision_plan(title, body, diagnosis_text, selected_options, custom_instruction, writing_style, api_key):
@@ -282,12 +272,14 @@ def get_revision_plan(title, body, diagnosis_text, selected_options, custom_inst
     options_desc = "、".join([option_map.get(k, "") for k in sorted(selected_options) if k in option_map])
     style_prompt_map = {"标准": "稳健理性", "批判犀利": "批判思辨", "文学抒情": "文学抒情", "逻辑严密": "逻辑严谨"}
     style_desc = style_prompt_map.get(writing_style, "稳健理性")
+    custom_desc = f"\n【用户特别要求（必须纳入计划）】：{custom_instruction.strip()}" if custom_instruction and custom_instruction.strip() else ""
     prompt = f"""【作文题目】：{title}
 【原文摘要】：{body[:300]}...
 【诊断结果】：{diagnosis_text[:500]}
+{custom_desc}
 请制定一份修改计划（100字以内），包含：
 1. 修改目标（结合方向：{options_desc or '自定义'}，文风：{style_desc}）
-2. 关键修改点（3-5个要点）
+2. 关键修改点（3-5个要点，须体现用户特别要求）
 输出格式（纯文本，不要JSON）：
 修改目标：...
 关键修改点：
@@ -307,85 +299,27 @@ def get_revision_plan(title, body, diagnosis_text, selected_options, custom_inst
 # ====================== 修缮引擎（支持局部修缮） ==============================
 def revise_essay(title, original_body, diagnosis_text, selected_options,
                  calibration_note="", custom_instruction="", writing_style="标准",
-                 sample_text="", target_paragraphs=None, api_key=""):
+                 sample_text="", target_paragraphs=None, api_key="",
+                 genre="议论文", grade="高三"):
     option_map = {
         "1": "提升思维深度：运用概念界定、三级追问、批判反思等方法，让立意更深刻。",
         "2": "优化文章结构：按递进式或对比式逻辑重组段落，使层次清晰，逻辑推进感强。",
         "3": "精炼语言表达：替换模糊词汇，优化长短句节奏，消除语病。",
         "4": "充实论据阐释：剪裁现有素材，增加假设追问，强化论据与论点的咬合。"
     }
-    instructions = [option_map[key] for key in sorted(selected_options) if key in option_map]
-    base_instruction = "；".join(instructions) if instructions else "（无预设方向）"
-
-    style_prompt_map = {
-        "标准": "采用高考一类文的稳健、理性风格。",
-        "批判犀利": "增强批判性语气，使用更强的对比、质疑和反思措辞，凸显思辨张力。",
-        "文学抒情": "增强文学性，运用比喻、拟人、排比等修辞，使语言更具感染力和画面感。",
-        "逻辑严密": "强化因果链、演绎推理，多用'由此可见''究其本质''反观当下'等逻辑连接词。"
-    }
-    style_instruction = style_prompt_map.get(writing_style, style_prompt_map["标准"])
-
-    custom_note = f"【用户特别定制要求】：{custom_instruction.strip()}" if custom_instruction and custom_instruction.strip() else ""
-    calibration_context = f"\n【校准参考意见】：{calibration_note}" if calibration_note else ""
-    sample_context = f"\n【参考范文/素材（请模仿其风格或结构）】：\n{sample_text}" if sample_text and sample_text.strip() else ""
-
-    # ===== 局部修缮逻辑（加固） =====
-    marked_original = original_body
-    use_local = False
-
-    if target_paragraphs and len(target_paragraphs) > 0:
-        matched = 0
-        temp = original_body
-        for para in target_paragraphs:
-            if para and para in temp:
-                temp = temp.replace(para, f"【待修改开始】\n{para}\n【待修改结束】", 1)
-                matched += 1
-        if matched > 0:
-            marked_original = temp
-            use_local = True
-
-    if use_local:
-        modification_instruction = f"""
-【局部修缮模式】
-用户选定了以下段落要求修改（共{len(target_paragraphs)}段），其他段落必须一字不改地保留：
----已选定段落---
-{chr(10).join(['第' + str(i+1) + '段：' + p[:50] + '...' for i, p in enumerate(target_paragraphs)])}
----
-
-请只修改被【待修改开始】和【待修改结束】标记的段落，其余部分完全照抄原文。
-被修改的段落可以重写、润色、调整逻辑，但必须保持与原段落字数相近（±20%）。
-"""
-        output_instruction = "输出完整的修改后文章。被标记的段落已修改，其他部分一字不差照抄。"
-        source_text = marked_original
-    else:
-        modification_instruction = "（全文修缮模式：全面修改整篇文章）"
-        output_instruction = "输出修缮后的完整文章。"
-        source_text = original_body
-
-    prompt = f"""【作文题目】：{title}
-【原文】：
-{source_text}
-【诊断结果】：
-{diagnosis_text}
-{calibration_context}
-{sample_context}
-
-【修缮综合指令】：
-1. 基础方向：{base_instruction}
-2. 整体文风：{style_instruction}
-3. {custom_note if custom_note else "（用户无额外自定义要求）"}
-4. {modification_instruction}
-
-【核心要求】：
-{output_instruction}
-不要任何分析过程或开场白，直接输出文章正文。"""
-
+    # 文体化 prompt 由配置中心统一构建（含文体策略/年级/文风/局部修缮/静默纠错）
+    prompt, system_prompt = pc.build_revise_prompt(
+        title, original_body, diagnosis_text, genre, selected_options,
+        custom_instruction=custom_instruction, style=writing_style,
+        calibration_note=calibration_note, sample_text=sample_text,
+        target_paras=target_paragraphs, grade=grade
+    )
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     try:
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=[
-                {"role": "system", "content": "你是一位资深高考作文辅导老师，擅长根据多维指令精修议论文。请只输出修缮后的文章正文。"},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.75,
@@ -397,29 +331,28 @@ def revise_essay(title, original_body, diagnosis_text, selected_options,
 
 # ====================== 生成Diff对比 ==============================
 def generate_diff_html(original, revised):
+    """生成 Diff HTML。所有来自作文原文的内容都先转义，杜绝 XSS。"""
     diff = difflib.ndiff(original.splitlines(), revised.splitlines())
     html_parts = []
     for line in diff:
+        #  nl2br：转义后再把换行替换为 <br>，避免原文里的换行丢失
+        content = html.escape(line[2:]).replace('\r', '')
         if line.startswith('+ '):
-            html_parts.append(f'<span class="diff-add">{line[2:]}</span>')
+            html_parts.append(f'<span class="diff-add">{content}</span>')
         elif line.startswith('- '):
-            html_parts.append(f'<span class="diff-remove">{line[2:]}</span>')
+            html_parts.append(f'<span class="diff-remove">{content}</span>')
         elif line.startswith('  '):
-            html_parts.append(line[2:])
+            html_parts.append(content)
     return '<br>'.join(html_parts)
 
 # ====================== 范文生成（新增功能） ==============================
-GENRE_GUIDE = {
-    "议论文": "中心论点鲜明，分论点递进或并列，论据充分（事实+道理论据），论证有层次",
-    "记叙文": "选材典型，细节生动，情感真挚，叙事有波澜（起承转合）",
-    "散文": "形散神聚，语言优美，情感细腻，意象丰富，有哲思升华",
-}
+GENRE_GUIDE = {g: pc.get_genre_tips(g) for g in pc.get_genre_list()}
 
 STYLE_HINT = {
-    "稳健理性": "语言克制、逻辑清晰、理性思辨",
-    "批判犀利": "观点锋利、善用反问/对比、思辨张力强",
-    "文学抒情": "修辞丰富、意象优美、情感饱满",
-    "逻辑严密": "因果链清晰、善用'由此可见/究其本质'等连接词",
+    "稳健理性": pc.get_style_prompt("标准"),
+    "批判犀利": pc.get_style_prompt("批判犀利"),
+    "文学抒情": pc.get_style_prompt("文学抒情"),
+    "逻辑严密": pc.get_style_prompt("逻辑严密"),
 }
 
 def generate_outline(title, genre, grade_level, style, api_key):
@@ -539,13 +472,16 @@ def init_session():
         "current_title": "", "current_body": "",
         "logs": [], "preset_instructions": [],
         "has_diagnosed": False, "has_revised": False, "comparison_report": None,
-        "sample_text": "", "revision_plan": "", "selected_paragraphs": [],
-        "genre": "议论文",
+        "sample_text": "", "sample_version": 0, "revision_plan": "", "selected_paragraphs": [],
+        "genre": "议论文", "grade": "高三",
         # 修缮表单控件
         "opt1": False, "opt2": False, "opt3": False, "opt4": False,
         "custom_text": "",
         "style_option": "标准 (高考一类文)",
         "show_plan": False, "use_calibration": False, "use_sample": False,
+        # 构思破题 / 起草扩写
+        "idea_title": "", "idea_result": "", "idea_version": 0,
+        "draft_title": "", "draft_source": "", "draft_result": "", "draft_version": 0,
         # 范文生成
         "me_title": "", "me_title_saved": "", "me_essay": "", "me_outline": "",
         "me_version": 0,
@@ -556,6 +492,28 @@ def init_session():
 
 init_session()
 
+def send_to_diagnosis(title, body, genre=None):
+    """统一的『送入诊断』入口：锁定文本/文体，清空所有旧的诊断与修缮状态。
+
+    任何新增的导入来源（录入页、起草页、范文生成页……）都应调用本函数，
+    避免各处清空逻辑不一致导致状态串台。
+    """
+    st.session_state.current_title = title
+    st.session_state.current_body = body
+    if genre:
+        st.session_state.genre = genre
+    for k in ("diagnosis_dict", "diagnosis_raw", "calibrated_dict", "calibration_note",
+              "comparison_report", "revised_text", "revision_plan"):
+        st.session_state[k] = "" if k in ("diagnosis_raw", "calibration_note", "revised_text", "revision_plan") else (
+            None if k == "comparison_report" else {})
+    st.session_state.has_diagnosed = False
+    st.session_state.has_revised = False
+    st.session_state["_plan_pending"] = False
+    # 段落勾选状态随作文切换而失效
+    for k in list(st.session_state.keys()):
+        if k.startswith("para_"):
+            del st.session_state[k]
+
 def reset_all():
     for key in list(st.session_state.keys()):
         del st.session_state[key]
@@ -564,16 +522,22 @@ def reset_all():
 # ===== 步骤条 =====
 def render_step_bar():
     if st.session_state.get("has_revised"):
-        current = 3
+        current = 5
     elif st.session_state.get("has_diagnosed"):
+        current = 4
+    elif st.session_state.get("current_title"):
+        current = 3
+    elif st.session_state.get("draft_result"):
         current = 2
-    else:
+    elif st.session_state.get("idea_result"):
         current = 1
-    steps = ["📄 作文录入", "📊 多维诊断", "✍️ 智能修缮"]
+    else:
+        current = 0
+    steps = ["💡 构思破题", "✏️ 起草扩写", "📄 作文录入", "📊 多维诊断", "✍️ 智能修缮"]
     cols = st.columns(len(steps))
     for i, (col, label) in enumerate(zip(cols, steps)):
         with col:
-            if i + 1 == current:
+            if i == current:
                 st.markdown(f"<span class='step-active'>👉 {label}</span>", unsafe_allow_html=True)
             else:
                 st.markdown(f"<span class='step-inactive'>{label}</span>", unsafe_allow_html=True)
@@ -583,6 +547,16 @@ render_step_bar()
 
 # ===== 侧边栏 =====
 with st.sidebar:
+    st.header("🎯 全局评估设置")
+    grade_options = ["高一", "高二", "高三", "高考冲刺"]
+    # 唯一写入源：不再用 key 绑定 session_state，避免多控件互相覆盖
+    st.session_state["grade"] = st.selectbox(
+        "评估年级", grade_options,
+        index=grade_options.index(st.session_state.get("grade", "高三")),
+        help="影响诊断严格度与修缮标准"
+    )
+    st.caption(f"当前文体：{pc.get_genre_icon(st.session_state.get('genre', '议论文'))} {st.session_state.get('genre', '议论文')}（在录入页选择）")
+
     st.header("⚙️ 密钥配置")
     user_zhipu = st.text_input("智谱API Key", value="", type="password", placeholder="留空则使用云端Secret")
     user_deepseek = st.text_input("DeepSeek API Key", value="", type="password", placeholder="留空则使用云端Secret")
@@ -624,10 +598,163 @@ with st.sidebar:
         )
     st.caption("💡 输入框为空时自动使用部署Secret")
 
-# ===== 主标签页（4 个） =====
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["📄 作文录入", "📊 多维诊断", "✍️ 智能修缮", "📖 范文生成"]
+# ===== 主标签页（6 个） =====
+tab_idea, tab_draft, tab1, tab2, tab3, tab4 = st.tabs(
+    ["💡 构思破题", "✏️ 起草扩写", "📄 作文录入", "📊 多维诊断", "✍️ 智能修缮", "📖 范文生成"]
 )
+
+# ========== TAB: 构思破题 ==========
+with tab_idea:
+    st.subheader("💡 构思破题")
+    st.caption("输入作文题，AI 从不同视角破题，输出角度、提纲与素材推荐")
+
+    c_i1, c_i2 = st.columns([3, 1])
+    with c_i1:
+        iv = st.session_state.idea_version
+        idea_title = st.text_area(
+            "作文题目（或话题）",
+            value=st.session_state.idea_title,
+            height=100,
+            key=f"idea_title_{iv}",
+            placeholder="例：以'边界'为题写一篇议论文"
+        )
+        st.session_state.idea_title = idea_title
+    with c_i2:
+        st.caption(f"🎓 年级：{st.session_state.get('grade', '高三')}（在左侧栏修改）")
+        idea_genre = st.selectbox("文体", pc.get_genre_list(), key="idea_genre")
+        idea_hint = st.text_area("补充要求（可选）", height=68, key="idea_hint",
+                                 placeholder="例如：希望联系现实热点")
+
+    if st.button("💡 生成构思方案", type="primary", use_container_width=True, key="idea_gen_btn"):
+        if not idea_title.strip():
+            st.warning("请先输入作文题目")
+        elif not final_deepseek:
+            st.error("⚠️ 请配置 DeepSeek API Key")
+        else:
+            with st.spinner("AI 正在破题构思..."):
+                try:
+                    client = OpenAI(api_key=final_deepseek, base_url="https://api.deepseek.com")
+                    prompt = pc.build_idea_prompt(idea_title, idea_genre, st.session_state.grade, idea_hint)
+                    resp = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.7, max_tokens=1500
+                    )
+                    st.session_state.idea_result = resp.choices[0].message.content
+                    st.session_state.idea_version += 1
+                    log_action("构思破题", f"题目:{idea_title[:20]} 文体:{idea_genre}")
+                    st.success("✅ 构思方案生成完成！")
+                except Exception as e:
+                    st.error(f"生成失败: {e}")
+
+    if st.session_state.get("idea_result"):
+        st.divider()
+        edited_idea = st.text_area(
+            "构思方案（可编辑）", value=st.session_state.idea_result,
+            height=420, key=f"idea_result_{st.session_state.idea_version}"
+        )
+        if edited_idea != st.session_state.idea_result:
+            st.session_state.idea_result = edited_idea
+        st.markdown("---")
+        c_i3, c_i4 = st.columns(2)
+        with c_i3:
+            if st.button("✏️ 送入「起草扩写」", type="primary", use_container_width=True, key="idea_to_draft"):
+                st.session_state.draft_title = st.session_state.idea_title
+                st.session_state.draft_source = edited_idea
+                st.session_state["draft_genre_request"] = idea_genre  # 文体随流程传递，不回退默认议论文
+                st.session_state.draft_version += 1
+                st.success("✅ 已送入「起草扩写」")
+        with c_i4:
+            st.download_button("⬇️ 下载构思方案 (.txt)", edited_idea,
+                               file_name="构思方案.txt", mime="text/plain", use_container_width=True)
+
+# ========== TAB: 起草扩写 ==========
+with tab_draft:
+    st.subheader("✏️ 起草扩写")
+    st.caption("把关键词、提纲或构思方案扩写成一篇结构完整的文章")
+
+    c_d1, c_d2 = st.columns([3, 1])
+    with c_d1:
+        dv = st.session_state.draft_version
+        draft_title = st.text_area(
+            "作文题目（或话题）",
+            value=st.session_state.draft_title,
+            height=80, key=f"draft_title_{dv}",
+            placeholder="例：以'边界'为题写一篇议论文"
+        )
+        st.session_state.draft_title = draft_title
+    with c_d2:
+        # 构思页送入时通过 draft_genre_request 指定文体；用动态 key 让控件按建议值重建
+        req_genre = st.session_state.get("draft_genre_request")
+        genre_list = pc.get_genre_list()
+        default_idx = genre_list.index(req_genre) if req_genre in genre_list else 0
+        draft_genre = st.selectbox(
+            "文体", genre_list, index=default_idx,
+            key=f"draft_genre_{st.session_state.draft_version}"
+        )
+        draft_style = st.selectbox("目标文风", pc.STYLE_OPTIONS, key="draft_style")
+        st.caption(f"🎓 年级：{st.session_state.get('grade', '高三')}（在左侧栏修改）")
+
+    dv = st.session_state.draft_version
+    draft_source = st.text_area(
+        "思路 / 关键词 / 构思方案（从「构思破题」送入或手动输入）",
+        value=st.session_state.draft_source,
+        height=220, key=f"draft_source_{dv}",
+        placeholder="可粘贴构思方案，或写下几个关键词，如：边界、规则、自由、创新"
+    )
+    st.session_state.draft_source = draft_source
+
+    if st.button("✏️ 扩写成文", type="primary", use_container_width=True, key="draft_gen_btn"):
+        if not draft_title.strip():
+            st.warning("请先输入作文题目")
+        elif not draft_source.strip():
+            st.warning("请输入思路或关键词")
+        elif not final_deepseek:
+            st.error("⚠️ 请配置 DeepSeek API Key")
+        else:
+            with st.spinner("AI 正在扩写成文..."):
+                try:
+                    client = OpenAI(api_key=final_deepseek, base_url="https://api.deepseek.com")
+                    prompt = pc.build_draft_prompt(draft_title, draft_genre, draft_source,
+                                                   draft_style, st.session_state.grade)
+                    resp = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.8, max_tokens=2500
+                    )
+                    st.session_state.draft_result = resp.choices[0].message.content
+                    st.session_state["draft_genre_request"] = draft_genre  # 固化用户最终选择
+                    st.session_state.draft_version += 1
+                    log_action("起草扩写", f"题目:{draft_title[:20]} 文体:{draft_genre}")
+                    st.success("✅ 草稿生成完成！")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"生成失败: {e}")
+
+    if st.session_state.get("draft_result"):
+        st.divider()
+        edited_draft = st.text_area(
+            "草稿正文（可直接编辑）", value=st.session_state.draft_result,
+            height=420, key=f"draft_result_{st.session_state.draft_version}"
+        )
+        if edited_draft != st.session_state.draft_result:
+            st.session_state.draft_result = edited_draft
+        st.markdown("---")
+        c_d3, c_d4, c_d5 = st.columns(3)
+        with c_d3:
+            if st.button("📊 送入「多维诊断」", type="primary", use_container_width=True, key="draft_to_diag"):
+                send_to_diagnosis(st.session_state.draft_title, edited_draft, draft_genre)
+                log_action("草稿导入诊断", st.session_state.current_title[:20])
+                st.success("✅ 已导入「多维诊断」。请切换标签页查看评分。")
+        with c_d4:
+            st.download_button("⬇️ 下载草稿 (.txt)", edited_draft,
+                               file_name="草稿.txt", mime="text/plain", use_container_width=True)
+        with c_d5:
+            if st.button("🗑️ 清空草稿", use_container_width=True, key="draft_clear"):
+                st.session_state.draft_result = ""
+                st.session_state.draft_version += 1
+                st.rerun()
+
 # ========== TAB1: 录入 ==========
 with tab1:
     col1, col2 = st.columns([1, 1])
@@ -743,9 +870,11 @@ with tab1:
         st.markdown("**✏️ 手动编辑区**")
         genre = st.selectbox(
             "文体",
-            ["议论文", "记叙文", "说明文", "书信", "其他"],
-            key="genre"
+            pc.get_genre_list(),
+            key="genre",
+            help="不同文体使用各自独立的评分维度与修缮策略"
         )
+        st.caption(f"📐 评分维度：{' / '.join(pc.get_genre_dimensions(genre).keys())}")
 
         ocr_v = st.session_state.ocr_version
         title = st.text_area(
@@ -773,13 +902,9 @@ with tab1:
         if st.button("📌 确认文本并进入诊断", type="primary", use_container_width=True, key="t1_confirm"):
             is_valid, msg = validate_input(title, body)
             if is_valid:
-                st.session_state.current_title = title
-                st.session_state.current_body = body
-                for k in list(st.session_state.keys()):
-                    if k.startswith("para_"):
-                        del st.session_state[k]
+                send_to_diagnosis(title, body, genre)
                 st.success("✅ 文本已锁定！请切换至「多维诊断」标签")
-                log_action("文本确认", f"字数:{len(body)}")
+                log_action("文本确认", f"文体:{genre}, 字数:{len(body)}")
             else:
                 st.error(f"❌ {msg}")
 
@@ -791,7 +916,9 @@ with tab2:
     else:
         col_d1, col_d2 = st.columns([2, 1])
         with col_d1:
-            st.subheader("📊 学术诊断 (3次信度校验)")
+            cur_genre = st.session_state.get("genre", "议论文")
+            st.subheader(f"📊 学术诊断 (3次信度校验) · {pc.get_genre_icon(cur_genre)}{cur_genre}")
+            st.caption(f"📐 评分维度：{' / '.join(pc.get_genre_dimensions(cur_genre).keys())}　｜　年级：{st.session_state.get('grade', '高三')}")
             if st.button("🚀 执行多维诊断", type="primary", key="t2_diag_btn"):
                 if not final_deepseek:
                     st.error("⚠️ 请配置DeepSeek API Key")
@@ -802,13 +929,13 @@ with tab2:
                                 st.session_state.current_title,
                                 st.session_state.current_body,
                                 final_deepseek,
-                                runs=3
+                                runs=3, genre=cur_genre, grade=st.session_state.get("grade", "高三")
                             )
                             st.session_state.diagnosis_dict = diagnosis
                             st.session_state.diagnosis_raw = json.dumps(diagnosis, ensure_ascii=False)
                             st.session_state.has_diagnosed = True
                             st.success("✅ 诊断完成！")
-                            log_action("诊断", f"总分:{diagnosis.get('score')}")
+                            log_action("诊断", f"文体:{cur_genre}, 总分:{diagnosis.get('score')}")
                         except Exception as e:
                             st.error(f"诊断失败: {e}")
 
@@ -826,11 +953,12 @@ with tab2:
                               delta_color="normal" if reliable else "inverse")
                 col_m3.metric("🔄 诊断次数", f"{reliability.get('runs', 0)} 次")
             st.divider()
-            st.subheader("📋 四维评分")
+            st.subheader("📋 分维度评分")
             detail = d.get("detail", {})
-            cols = st.columns(4)
-            metrics = [("立意", 20), ("结构", 15), ("语言", 15), ("论据", 10)]
-            for idx, (label, total) in enumerate(metrics):
+            dims = st.session_state.get("genre", "议论文")
+            dims_map = pc.get_genre_dimensions(dims)
+            cols = st.columns(len(dims_map))
+            for idx, (label, total) in enumerate(dims_map.items()):
                 score = detail.get(label, 0)
                 with cols[idx]:
                     st.metric(label, f"{score}/{total}")
@@ -851,7 +979,8 @@ with tab2:
             st.divider()
             st.subheader("🤝 人机协同校准")
             with st.form("calibration_form"):
-                dim = st.selectbox("有异议的维度", ["立意", "结构", "语言", "论据", "总分"], key="calib_dim")
+                dim_options = list(pc.get_genre_dimensions(st.session_state.get("genre", "议论文")).keys()) + ["总分"]
+                dim = st.selectbox("有异议的维度", dim_options, key="calib_dim")
                 deviation = st.radio("你认为AI评分", ["偏高", "偏低", "基本准确"], key="calib_dev")
                 comment = st.text_area("补充说明", placeholder="例如：立意虽然扣题，但深度不足", key="calib_comment")
                 submit_calib = st.form_submit_button("🔄 执行校准")
@@ -867,7 +996,7 @@ with tab2:
                                 st.session_state.current_title,
                                 st.session_state.current_body,
                                 d, dim, deviation, comment,
-                                final_deepseek
+                                final_deepseek, genre=st.session_state.get("genre", "议论文")
                             )
                             st.session_state.calibrated_dict = new_score
                             st.session_state.calibration_note = f"{dim}评分{deviation}；{comment}".strip("；")
@@ -910,18 +1039,24 @@ with tab3:
         with st.expander("📚 参考范文/素材上传（可选）"):
             st.caption("上传一篇范文，AI将分析其结构并模仿其风格修缮")
             sample_file = st.file_uploader("上传范文 (txt/md)", type=["txt", "md"], key="t3_sample_uploader")
-            if sample_file:
-                try:
-                    sample_content = sample_file.read().decode("utf-8")
-                except UnicodeDecodeError:
-                    sample_content = sample_file.read().decode("gbk", errors="ignore")
-                st.session_state.sample_text = sample_content
-                st.success(f"✅ 已加载范文 ({len(sample_content)}字)")
+            if sample_file is not None:
+                # 用 (文件名, 大小) 判断是否是新上传，避免同一文件每轮重复触发
+                file_sig = (sample_file.name, sample_file.size)
+                if file_sig != st.session_state.get("_last_sample_sig"):
+                    raw_bytes = sample_file.getvalue()  # getvalue 可重复读，不会推进指针
+                    try:
+                        sample_content = raw_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        sample_content = raw_bytes.decode("gbk", errors="ignore")
+                    st.session_state.sample_text = sample_content
+                    st.session_state.sample_version += 1
+                    st.session_state["_last_sample_sig"] = file_sig
+                    st.success(f"✅ 已加载范文 ({len(sample_content)}字)")
             sample_textarea = st.text_area(
                 "或直接粘贴范文内容",
                 value=st.session_state.sample_text,
                 height=150,
-                key="t3_sample_textarea"
+                key=f"t3_sample_textarea_{st.session_state.sample_version}"
             )
             if sample_textarea != st.session_state.sample_text:
                 st.session_state.sample_text = sample_textarea
@@ -1049,6 +1184,60 @@ with tab3:
 
             submit_revise = st.form_submit_button("✍️ 执行修缮", type="primary", use_container_width=True)
 
+        # ===== 执行修缮（供直接执行 / 确认后执行复用） =====
+        def execute_revision(api_key):
+            cur_genre = st.session_state.get("genre", "议论文")
+            with st.spinner("正在精修文章..."):
+                try:
+                    revised = revise_essay(
+                        st.session_state.current_title,
+                        st.session_state.current_body,
+                        st.session_state.diagnosis_raw,
+                        st.session_state["_rev_selected"],
+                        st.session_state.calibration_note if st.session_state.get("use_calibration") else "",
+                        st.session_state["_rev_custom"],
+                        st.session_state["_rev_style"],
+                        st.session_state.sample_text if st.session_state.get("use_sample") else "",
+                        st.session_state.get("selected_paragraphs", []),
+                        api_key,
+                        genre=cur_genre,
+                        grade=st.session_state.get("grade", "高三")
+                    )
+                    st.session_state.revised_text = revised
+                    st.session_state.has_revised = True
+                    st.success("✅ 修缮完成！")
+                    log_action("修缮", f"文体:{cur_genre}, 风格:{st.session_state['_rev_style']}")
+
+                    with st.spinner("正在评估修缮效果（3次信度校验）..."):
+                        try:
+                            revised_diag = diagnose_with_reliability(
+                                st.session_state.current_title, revised, api_key,
+                                runs=3, genre=cur_genre, grade=st.session_state.get("grade", "高三")
+                            )
+                            orig_diag = st.session_state.diagnosis_dict
+                            # 统一口径：双方都用三次均分（旧数据无 reliability 时回退到单次 score）
+                            orig_avg = orig_diag.get("reliability", {}).get(
+                                "avg_score", orig_diag.get("score", 0))
+                            revised_avg = revised_diag.get("reliability", {}).get(
+                                "avg_score", revised_diag.get("score", 0))
+                            comparison = {
+                                "basis": "三次均分",
+                                "original_score": orig_avg,
+                                "revised_score": revised_avg,
+                                "score_change": round(revised_avg - orig_avg, 1),
+                                "original_details": orig_diag.get("detail"),
+                                "revised_details": revised_diag.get("detail"),
+                                "original_summary": orig_diag.get("summary"),
+                                "revised_summary": revised_diag.get("summary"),
+                                "local_paragraphs": len(st.session_state.get("selected_paragraphs", []))
+                            }
+                            st.session_state.comparison_report = comparison
+                            log_action("闭环诊断", f"提升:{comparison['score_change']:+}分(三次均分)")
+                        except Exception as e:
+                            st.warning(f"闭环诊断失败: {e}")
+                except Exception as e:
+                    st.error(f"修缮失败: {e}")
+
         # ===== 处理修缮请求 =====
         if submit_revise:
             selected = [k for k in ["1", "2", "3", "4"] if st.session_state.get(f"opt{k}")]
@@ -1073,7 +1262,12 @@ with tab3:
                 }
                 selected_style = style_map[style_option]
 
-                # 思维链模式
+                # 缓存本次修缮参数，供两段式确认复用
+                st.session_state["_rev_selected"] = selected
+                st.session_state["_rev_custom"] = custom_text
+                st.session_state["_rev_style"] = selected_style
+
+                # 思维链模式：生成本轮计划后“暂停”，等待用户确认，不再自动执行
                 if st.session_state.get("show_plan"):
                     with st.spinner("正在生成修改计划..."):
                         try:
@@ -1087,64 +1281,29 @@ with tab3:
                                 final_deepseek
                             )
                             st.session_state.revision_plan = plan
+                            st.session_state["_plan_pending"] = True
                             log_action("生成计划", "成功")
+                            st.rerun()
                         except Exception as e:
                             st.error(f"生成计划失败: {e}")
+                else:
+                    execute_revision(final_deepseek)
 
-                if st.session_state.get("revision_plan"):
-                    st.markdown("**📋 AI 修改计划**")
-                    st.info(st.session_state.revision_plan)
-                    st.caption("👉 若计划无误，点击下方「执行修缮」按钮继续")
-
-                # 执行正式修缮
-                with st.spinner("正在精修文章..."):
-                    try:
-                        cal_note = st.session_state.calibration_note if st.session_state.get("use_calibration") else ""
-                        sample = st.session_state.sample_text if st.session_state.get("use_sample") else ""
-                        target_paras = st.session_state.get("selected_paragraphs", [])
-
-                        revised = revise_essay(
-                            st.session_state.current_title,
-                            st.session_state.current_body,
-                            st.session_state.diagnosis_raw,
-                            selected,
-                            cal_note,
-                            custom_text,
-                            selected_style,
-                            sample,
-                            target_paras,
-                            final_deepseek
-                        )
-                        st.session_state.revised_text = revised
-                        st.session_state.has_revised = True
-                        st.success("✅ 修缮完成！")
-                        log_action("修缮", f"风格:{selected_style}, 局部段数:{len(target_paras)}")
-
-                        # 闭环诊断
-                        with st.spinner("正在评估修缮效果..."):
-                            try:
-                                revised_diag = quick_diagnose(
-                                    st.session_state.current_title,
-                                    revised,
-                                    final_deepseek
-                                )
-                                orig_diag = st.session_state.diagnosis_dict
-                                comparison = {
-                                    "original_score": orig_diag.get("score"),
-                                    "revised_score": revised_diag.get("score"),
-                                    "score_change": revised_diag.get("score") - orig_diag.get("score"),
-                                    "original_details": orig_diag.get("detail"),
-                                    "revised_details": revised_diag.get("detail"),
-                                    "original_summary": orig_diag.get("summary"),
-                                    "revised_summary": revised_diag.get("summary"),
-                                    "local_paragraphs": len(target_paras)
-                                }
-                                st.session_state.comparison_report = comparison
-                                log_action("闭环诊断", f"提升:{comparison['score_change']:+}分")
-                            except Exception as e:
-                                st.warning(f"闭环诊断失败: {e}")
-                    except Exception as e:
-                        st.error(f"修缮失败: {e}")
+        # ===== 计划确认（两段式：生成计划后的下一轮交互） =====
+        if st.session_state.get("_plan_pending") and st.session_state.get("revision_plan"):
+            st.markdown("**📋 AI 修改计划**")
+            st.info(st.session_state.revision_plan)
+            c_p1, c_p2 = st.columns(2)
+            with c_p1:
+                if st.button("✅ 计划无误，执行修缮", type="primary", use_container_width=True, key="plan_confirm"):
+                    st.session_state["_plan_pending"] = False
+                    execute_revision(final_deepseek)
+                    st.rerun()
+            with c_p2:
+                if st.button("↩️ 返回修改设置", use_container_width=True, key="plan_cancel"):
+                    st.session_state["_plan_pending"] = False
+                    st.session_state.revision_plan = ""
+                    st.rerun()
 
         # ===== 显示修缮稿 =====
         if st.session_state.revised_text:
@@ -1154,15 +1313,15 @@ with tab3:
 
             if st.session_state.comparison_report:
                 comp = st.session_state.comparison_report
-                st.subheader("📊 修缮效果对比")
+                st.subheader(f"📊 修缮效果对比（{comp.get('basis', '单次评分')}）")
                 cb1, cb2 = st.columns(2)
                 with cb1:
-                    st.metric("修缮前", f"{comp['original_score']}/60")
+                    st.metric("修缮前(三次均分)", f"{comp['original_score']}/60")
                     for k, v in comp["original_details"].items():
                         st.text(f"{k}: {v}")
                 with cb2:
-                    st.metric("修缮后", f"{comp['revised_score']}/60",
-                              delta=f"{comp['score_change']:+}分")
+                    st.metric("修缮后(三次均分)", f"{comp['revised_score']}/60",
+                              delta=f"{comp['score_change']:+.1f}分")
                     for k, v in comp["revised_details"].items():
                         orig = comp["original_details"].get(k, 0)
                         st.text(f"{k}: {v} ({v - orig:+})")
@@ -1234,7 +1393,7 @@ with tab4:
     # ---------- 右列：生成配置 ----------
     with col_f2:
         st.markdown("**② 生成配置**")
-        me_genre = st.selectbox("文体", ["议论文", "记叙文", "散文"], key="me_genre")
+        me_genre = st.selectbox("文体", pc.get_genre_list(), key="me_genre")
         me_grade = st.selectbox("年级", ["高一", "高二", "高三", "高考冲刺"], index=2, key="me_grade")
         me_style = st.selectbox("文风", ["稳健理性", "批判犀利", "文学抒情", "逻辑严密"], key="me_style")
         me_words = st.slider("目标字数", 600, 1200, 800, step=50, key="me_words")
@@ -1341,16 +1500,11 @@ with tab4:
             )
         with col_a2:
             if st.button("📊 投喂给 AI 评分", use_container_width=True, key="me_to_diag"):
-                st.session_state.current_title = st.session_state.get("me_title_saved", "")
-                st.session_state.current_body = st.session_state.me_essay
-                # 清空旧的诊断/修缮数据，避免串台
-                st.session_state.diagnosis_dict = {}
-                st.session_state.diagnosis_raw = ""
-                st.session_state.has_diagnosed = False
-                st.session_state.revised_text = ""
-                st.session_state.has_revised = False
-                st.session_state.comparison_report = None
-                st.session_state.calibrated_dict = {}
+                send_to_diagnosis(
+                    st.session_state.get("me_title_saved", ""),
+                    st.session_state.me_essay,
+                    me_genre
+                )
                 log_action("范文导入诊断", st.session_state.current_title[:20])
                 st.success("✅ 已导入「多维诊断」。请切换标签页查看评分。")
         with col_a3:
