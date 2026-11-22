@@ -27,24 +27,106 @@ st.set_page_config(page_title="AI作文批改研究平台", page_icon="📝", la
 # ============================================================
 st.markdown("""
 <style>
-    .score-card {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-        border-radius: 10px;
-        padding: 15px;
-        margin: 5px 0;
-    }
-    .diff-add { background-color: #d4edda; color: #155724; padding: 2px 4px; border-radius: 3px; }
-    .diff-remove { background-color: #f8d7da; color: #721c24; padding: 2px 4px; border-radius: 3px; }
-    .step-active { font-weight: bold; color: #0066cc; }
-    .step-inactive { color: #999; }
-    .para-checkbox {
-        background: #f8f9fa;
-        padding: 8px 12px;
-        border-radius: 6px;
-        margin-bottom: 6px;
-        border-left: 3px solid #0066cc;
-    }
-    .para-checkbox:hover { background: #e9ecef; }
+/* 全局基础重置 */
+.block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+    max-width: 1450px;
+}
+div[data-testid="stVerticalBlock"] > div {
+    gap: 0.75rem !important;
+}
+
+/* 卡片容器：各模块分区隔离 */
+.ui-card {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin: 14px 0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+
+/* 分数卡片 */
+.score-card {
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    border-radius: 12px;
+    padding: 18px;
+    margin: 8px 0;
+}
+
+/* diff 对比高亮 */
+.diff-add {
+    background-color: #d4edda;
+    color: #155724;
+    padding: 3px 5px;
+    border-radius: 4px;
+}
+.diff-remove {
+    background-color: #f8d7da;
+    color: #721c24;
+    padding: 3px 5px;
+    border-radius: 4px;
+}
+
+/* 步骤导航条 */
+.step-active {
+    font-weight: 700;
+    color: #005bcc;
+    font-size: 16px;
+}
+.step-inactive {
+    color: #94a3b8;
+    font-size: 15px;
+}
+
+/* 段落勾选框 */
+.para-checkbox {
+    background: #f8fafc;
+    padding: 9px 12px;
+    border-radius: 8px;
+    margin-bottom: 7px;
+    border-left: 4px solid #0066cc;
+}
+.para-checkbox:hover { background-color: #f1f5f9; }
+/* 多段落滚动容器（form 内用纯 CSS，避免嵌套 height 容器兼容问题） */
+.para-scroll {
+    max-height: 340px;
+    overflow-y: auto;
+    padding-right: 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+/* 折叠面板美化 */
+div[data-testid="stExpander"] {
+    border-radius: 12px !important;
+    border: 1px solid #e2e8f0 !important;
+}
+
+/* Diff 预览盒子 */
+.diff-view-box {
+    background: #f8fafc;
+    padding: 18px;
+    border-radius: 10px;
+    border: 1px solid #cbd5e1;
+    font-family: Consolas, Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+/* 侧边栏区块间距 */
+.sidebar-section { margin-bottom: 1.5rem; }
+
+/* 空状态提示 */
+.empty-tip {
+    padding: 24px;
+    text-align: center;
+    color: #64748b;
+    background: #f8fafc;
+    border-radius: 12px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -534,20 +616,27 @@ def render_step_bar():
     else:
         current = 0
     steps = ["💡 构思破题", "✏️ 起草扩写", "📄 作文录入", "📊 多维诊断", "✍️ 智能修缮"]
-    cols = st.columns(len(steps))
-    for i, (col, label) in enumerate(zip(cols, steps)):
-        with col:
-            if i == current:
-                st.markdown(f"<span class='step-active'>👉 {label}</span>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<span class='step-inactive'>{label}</span>", unsafe_allow_html=True)
+    with st.container():
+        st.markdown('<div class="ui-card">', unsafe_allow_html=True)
+        cols = st.columns(len(steps))
+        for i, (col, label) in enumerate(zip(cols, steps)):
+            with col:
+                # current 为 0-based：i<current 已完成，i==current 当前，i>current 未开始
+                if i < current:
+                    st.markdown(f"<div class='step-inactive'>✅ {label}</div>", unsafe_allow_html=True)
+                elif i == current:
+                    st.markdown(f"<div class='step-active'>👉 {label}</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='step-inactive'>○ {label}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
 
 render_step_bar()
 
 # ===== 侧边栏 =====
 with st.sidebar:
-    st.header("🎯 全局评估设置")
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.subheader("🎯 全局评估设置")
     grade_options = ["高一", "高二", "高三", "高考冲刺"]
     # 唯一写入源：不再用 key 绑定 session_state，避免多控件互相覆盖
     st.session_state["grade"] = st.selectbox(
@@ -555,29 +644,38 @@ with st.sidebar:
         index=grade_options.index(st.session_state.get("grade", "高三")),
         help="影响诊断严格度与修缮标准"
     )
-    st.caption(f"当前文体：{pc.get_genre_icon(st.session_state.get('genre', '议论文'))} {st.session_state.get('genre', '议论文')}（在录入页选择）")
+    st.caption(f"📖 当前文体：{pc.get_genre_icon(st.session_state.get('genre', '议论文'))} {st.session_state.get('genre', '议论文')}（录入页切换）")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.header("⚙️ 密钥配置")
-    user_zhipu = st.text_input("智谱API Key", value="", type="password", placeholder="留空则使用云端Secret")
-    user_deepseek = st.text_input("DeepSeek API Key", value="", type="password", placeholder="留空则使用云端Secret")
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.subheader("🔑 API 密钥配置")
+    user_zhipu = st.text_input("智谱API Key", value="", type="password", placeholder="留空使用云端Secret")
+    user_deepseek = st.text_input("DeepSeek API Key", value="", type="password", placeholder="留空使用云端Secret")
 
     final_zhipu = user_zhipu if user_zhipu else ZHIPU_API_KEY
     final_deepseek = user_deepseek if user_deepseek else DEEPSEEK_API_KEY
 
-    if final_zhipu:
-        st.success("✅ 智谱Key已配置")
-    else:
-        st.warning("⚠️ 请配置智谱Key")
-    if final_deepseek:
-        st.success("✅ DeepSeekKey已配置")
-    else:
-        st.warning("⚠️ 请配置DeepSeekKey")
+    col_sb1, col_sb2 = st.columns(2)
+    with col_sb1:
+        if final_zhipu:
+            st.success("✅ 智谱")
+        else:
+            st.warning("⚠️ 智谱")
+    with col_sb2:
+        if final_deepseek:
+            st.success("✅ DS")
+        else:
+            st.warning("⚠️ DS")
+    st.caption("💡 输入框为空自动读取部署 Secret")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("---")
-    if st.button("🔄 重置所有数据", use_container_width=True):
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    if st.button("🔄 重置全部会话数据", use_container_width=True, type="secondary"):
         reset_all()
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+    st.subheader("📤 报告导出")
     if st.button("📥 生成诊断报告", use_container_width=True):
         report = {
             "timestamp": datetime.now().isoformat(),
@@ -590,13 +688,16 @@ with st.sidebar:
 
     if st.session_state.get("_report_json"):
         st.download_button(
-            "⬇️ 下载报告 (JSON)",
+            "⬇️ 下载 JSON 报告",
             st.session_state["_report_json"],
             "诊断报告.json",
             "application/json",
             use_container_width=True
         )
-    st.caption("💡 输入框为空时自动使用部署Secret")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.divider()
+    st.caption("📌 AI写作教练｜构思·起草·诊断·修缮·范文")
 
 # ===== 主标签页（6 个） =====
 tab_idea, tab_draft, tab1, tab2, tab3, tab4 = st.tabs(
@@ -605,6 +706,7 @@ tab_idea, tab_draft, tab1, tab2, tab3, tab4 = st.tabs(
 
 # ========== TAB: 构思破题 ==========
 with tab_idea:
+    st.markdown('<div class="ui-card">', unsafe_allow_html=True)
     st.subheader("💡 构思破题")
     st.caption("输入作文题，AI 从不同视角破题，输出角度、提纲与素材推荐")
 
@@ -667,9 +769,11 @@ with tab_idea:
         with c_i4:
             st.download_button("⬇️ 下载构思方案 (.txt)", edited_idea,
                                file_name="构思方案.txt", mime="text/plain", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ========== TAB: 起草扩写 ==========
 with tab_draft:
+    st.markdown('<div class="ui-card">', unsafe_allow_html=True)
     st.subheader("✏️ 起草扩写")
     st.caption("把关键词、提纲或构思方案扩写成一篇结构完整的文章")
 
@@ -754,11 +858,13 @@ with tab_draft:
                 st.session_state.draft_result = ""
                 st.session_state.draft_version += 1
                 st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ========== TAB1: 录入 ==========
 with tab1:
     col1, col2 = st.columns([1, 1])
     with col1:
+        st.markdown('<div class="ui-card">', unsafe_allow_html=True)
 
         # ---------- ① 上传 TXT（跳过 OCR） ----------
         st.markdown("**📄 方式一：上传 TXT 文件（跳过 OCR）**")
@@ -865,8 +971,12 @@ with tab1:
                     except Exception as e:
                         st.error(f"识别失败: {e}")
 
+    with col1:
+        st.markdown("</div>", unsafe_allow_html=True)
+
     # ---------- 右侧：手动编辑区（不用改） ----------
     with col2:
+        st.markdown('<div class="ui-card">', unsafe_allow_html=True)
         st.markdown("**✏️ 手动编辑区**")
         genre = st.selectbox(
             "文体",
@@ -907,13 +1017,15 @@ with tab1:
                 log_action("文本确认", f"文体:{genre}, 字数:{len(body)}")
             else:
                 st.error(f"❌ {msg}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ========== TAB2: 诊断 ==========
 with tab2:
     if not st.session_state.get("current_title"):
-        st.info("👆 请先在「作文录入」标签页确认文本")
+        st.markdown('<div class="empty-tip">ℹ️ 流程提示：请先切换到【📄 作文录入】完成作文文本确认</div>', unsafe_allow_html=True)
     else:
+        st.markdown('<div class="ui-card">', unsafe_allow_html=True)
         col_d1, col_d2 = st.columns([2, 1])
         with col_d1:
             cur_genre = st.session_state.get("genre", "议论文")
@@ -1025,14 +1137,16 @@ with tab2:
 
             st.divider()
             st.info("👉 请切换至「✍️ 智能修缮」标签继续操作")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ========== TAB3: 修缮 ==========
 with tab3:
     if not st.session_state.get("current_title"):
-        st.info("👆 请先在「作文录入」标签确认文本")
+        st.markdown('<div class="empty-tip">ℹ️ 流程提示：请先切换到【📄 作文录入】确认文本</div>', unsafe_allow_html=True)
     elif not st.session_state.has_diagnosed:
-        st.warning("⚠️ 请先在「多维诊断」标签执行诊断")
+        st.markdown('<div class="empty-tip">⚠️ 请先在【📊 多维诊断】执行诊断，再回来修缮</div>', unsafe_allow_html=True)
     else:
+        st.markdown('<div class="ui-card">', unsafe_allow_html=True)
         st.subheader("🔧 全维度定向修缮")
 
         # ===== 范文上传 =====
@@ -1167,13 +1281,19 @@ with tab3:
             st.divider()
 
             st.markdown("**④ 🎯 局部修缮（可选）**")
-            st.caption("勾选你想要修改的段落，AI将只修改这些段落；若不勾选，则修缮全文")
+            st.caption("勾选想要修改的段落，仅勾选段落会被修改；不勾选则全文修缮")
             if len(paragraphs) > 1:
-                for i, para in enumerate(paragraphs):
-                    preview = get_paragraph_preview(para, 100)
-                    st.checkbox(f"**第{i+1}段**：{preview}", key=f"para_{i}")
+                # 段落多时用 CSS 滚动包裹，避免 form 内嵌 height 容器的兼容问题
+                if len(paragraphs) > 8:
+                    st.markdown('<div class="para-scroll">', unsafe_allow_html=True)
+                    for i, para in enumerate(paragraphs):
+                        st.checkbox(f"**第{i+1}段**：{get_paragraph_preview(para, 100)}", key=f"para_{i}")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    for i, para in enumerate(paragraphs):
+                        st.checkbox(f"**第{i+1}段**：{get_paragraph_preview(para, 100)}", key=f"para_{i}")
             else:
-                st.info("📝 原文仅有一段，将执行全文修缮（建议在原文中使用换行分段）")
+                st.info("📝 当前文章仅单段，将执行全文修缮，建议换行拆分段落获得局部修改能力")
 
             st.divider()
 
@@ -1333,12 +1453,8 @@ with tab3:
                     st.session_state.current_body,
                     st.session_state.revised_text
                 )
-                st.markdown(
-                    f'<div style="background:#f8f9fa;padding:15px;border-radius:8px;'
-                    f'font-family:monospace;font-size:14px;">{diff_html}</div>',
-                    unsafe_allow_html=True
-                )
-                st.caption("🟢 绿色 = 新增/修改  🔴 红色 = 删除")
+                st.markdown(f'<div class="diff-view-box">{diff_html}</div>', unsafe_allow_html=True)
+                st.caption("🟢 绿色 = 新增/修改　🔴 红色 = 删除")
 
             st.download_button(
                 label="⬇️ 下载修缮稿 (.txt)",
@@ -1347,9 +1463,11 @@ with tab3:
                 mime="text/plain",
                 use_container_width=True
             )
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ========== TAB4: 范文生成 ==========
 with tab4:
+    st.markdown('<div class="ui-card">', unsafe_allow_html=True)
     st.subheader("📖 范文生成器")
     st.caption("上传/输入作文题目 → 选文体文风 → AI 独立完成破题、构思、写作，输出一篇示范作文")
 
@@ -1514,6 +1632,7 @@ with tab4:
                 st.session_state.me_title_saved = ""
                 st.session_state.me_version += 1
                 st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ===== 底部 =====
 st.sidebar.markdown("---")
