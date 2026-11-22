@@ -103,6 +103,72 @@ GENRE_CONFIG = {
 - 保留原文的个人风格和情感基调""",
         "system_prompt": "你是一位资深语文教师，擅长指导散文写作。只输出修缮后的文章正文。",
         "writing_tips": "散文核心：独特的意境 + 优美的语言 + 真挚的情感"
+    },
+
+    "说明文": {
+        "label": "说明文",
+        "icon": "🔬",
+        "dimensions": {
+            "说明对象与特征": 20,
+            "说明顺序与结构": 15,
+            "说明方法": 15,
+            "语言准确性": 10
+        },
+        "diagnose_prompt": """你是一位资深语文教师。请严格按以下标准对说明文进行评分（满分60分）：
+
+【说明对象与特征】（20分）：是否抓住事物本质特征？说明对象是否明确？
+【说明顺序与结构】（15分）：时间/空间/逻辑顺序是否合理？层次是否清晰？
+【说明方法】（15分）：是否恰当运用举例子、列数字、作比较、下定义等方法？
+【语言准确性】（10分）：措辞是否准确、严谨、简明？有无模糊或夸大表述？
+
+请按以下JSON格式输出（不要包含其他废话）：
+{
+  "score": 总分(整数),
+  "detail": {"说明对象与特征": 分数, "说明顺序与结构": 分数, "说明方法": 分数, "语言准确性": 分数},
+  "strengths": ["优点1(附原文证据)", "优点2", "优点3"],
+  "weaknesses": ["不足1(附原文证据)", "不足2", "不足3"],
+  "summary": "一句话总评(20字以内)"
+}""",
+        "revise_strategy": """修缮策略：
+- 突出说明对象的核心特征，删去无关描述
+- 调整说明顺序，使层次更清晰
+- 补充恰当的说明方法（列数字/作比较/下定义等）
+- 精炼语言，确保准确严谨""",
+        "system_prompt": "你是一位资深语文教师，擅长指导说明文写作。只输出修缮后的文章正文。",
+        "writing_tips": "说明文核心：抓住特征 + 顺序清晰 + 方法恰当 + 语言准确"
+    },
+
+    "书信": {
+        "label": "书信",
+        "icon": "✉️",
+        "dimensions": {
+            "格式规范": 20,
+            "内容真情": 15,
+            "语言表达": 15,
+            "交流对象意识": 10
+        },
+        "diagnose_prompt": """你是一位资深语文教师。请严格按以下标准对书信进行评分（满分60分）：
+
+【格式规范】（20分）：称呼、问候、正文、祝语、署名、日期是否完整正确？
+【内容真情】（15分）：内容是否具体充实？情感是否真挚？
+【语言表达】（15分）：语言是否得体流畅？是否符合对象身份？
+【交流对象意识】（10分）：是否有明确的交流对象？语气是否恰当？
+
+请按以下JSON格式输出（不要包含其他废话）：
+{
+  "score": 总分(整数),
+  "detail": {"格式规范": 分数, "内容真情": 分数, "语言表达": 分数, "交流对象意识": 分数},
+  "strengths": ["优点1(附原文证据)", "优点2", "优点3"],
+  "weaknesses": ["不足1(附原文证据)", "不足2", "不足3"],
+  "summary": "一句话总评(20字以内)"
+}""",
+        "revise_strategy": """修缮策略：
+- 检查并规范书信格式（称呼/祝语/署名/日期）
+- 充实具体内容，增强真情实感
+- 优化语言，使其更符合交流对象的身份和语气
+- 强化对象意识，让表达更有针对性""",
+        "system_prompt": "你是一位资深语文教师，擅长指导书信写作。只输出修缮后的文章正文。",
+        "writing_tips": "书信核心：格式规范 + 对象明确 + 情感真挚 + 语言得体"
     }
 }
 
@@ -115,7 +181,8 @@ def get_grade_strategy(grade="高三"):
     grade_map = {
         "高一": "侧重基础写作能力培养，语言流畅、结构完整即可。",
         "高二": "在基础之上强化逻辑思辨或文学表现力，要有一定深度。",
-        "高三": "对标高考满分作文标准，立意深刻、结构严谨、语言精准。"
+        "高三": "对标高考满分作文标准，立意深刻、结构严谨、语言精准。",
+        "高考冲刺": "对标高考满分作文标准，立意深刻、结构严谨、语言精准。"
     }
     return grade_map.get(grade, grade_map["高三"])
 
@@ -123,6 +190,8 @@ def get_grade_strategy(grade="高三"):
 # ============================================================
 # 三、文风策略
 # ============================================================
+
+STYLE_OPTIONS = ["标准", "批判犀利", "文学抒情", "逻辑严密"]
 
 def get_style_prompt(style="标准"):
     style_map = {
@@ -218,12 +287,16 @@ def build_revise_prompt(title, body, diagnosis_text, genre, selected_options,
     calibration_context = f"\n【校准参考意见】：{calibration_note}" if calibration_note else ""
     sample_context = f"\n【参考范文/素材】：\n{sample_text}" if sample_text and sample_text.strip() else ""
     
-    # 局部修缮
+    # 局部修缮（按段落逐一标记，避免同类段落被全部替换）
     if target_paras and len(target_paras) > 0:
-        marked_original = body
-        for para in target_paras:
-            if para in body:
-                marked_original = marked_original.replace(para, f"【待修改开始】\n{para}\n【待修改结束】")
+        paragraphs = [p.strip() for p in body.split("\n") if p.strip()]
+        marked_parts = []
+        for para in paragraphs:
+            if any(para == tp.strip() for tp in target_paras):
+                marked_parts.append(f"【待修改开始】\n{para}\n【待修改结束】")
+            else:
+                marked_parts.append(para)
+        marked_original = "\n".join(marked_parts)
         modification_instruction = f"""
 【局部修缮模式】用户选定了以下段落（共{len(target_paras)}段），只修改这些段落：
 {chr(10).join(['- ' + p[:50] + '...' for p in target_paras])}
@@ -231,6 +304,7 @@ def build_revise_prompt(title, body, diagnosis_text, genre, selected_options,
 """
         output_instruction = "输出完整文章。被标记的段落已修改，其他部分一字不差照抄。"
     else:
+        marked_original = body
         modification_instruction = "（全文修缮模式）"
         output_instruction = "输出修缮后的完整文章。"
     
@@ -245,7 +319,7 @@ def build_revise_prompt(title, body, diagnosis_text, genre, selected_options,
 【作文题目】：{title}
 
 【原文】：
-{marked_original if target_paras and len(target_paras) > 0 else body}
+{marked_original}
 
 【诊断结果】：
 {diagnosis_text}
@@ -278,19 +352,22 @@ def get_genre_list():
     """获取所有文体列表"""
     return list(GENRE_CONFIG.keys())
 
+def get_genre_config(genre):
+    """获取文体完整配置；未配置文体回退到议论文"""
+    return GENRE_CONFIG.get(genre, GENRE_CONFIG["议论文"])
+
 def get_genre_dimensions(genre):
     """获取指定文体的评分维度"""
-    config = GENRE_CONFIG.get(genre, GENRE_CONFIG["议论文"])
-    return config["dimensions"]
+    return get_genre_config(genre)["dimensions"]
 
 def get_genre_label(genre):
-    return GENRE_CONFIG.get(genre, GENRE_CONFIG["议论文"])["label"]
+    return get_genre_config(genre)["label"]
 
 def get_genre_icon(genre):
-    return GENRE_CONFIG.get(genre, GENRE_CONFIG["议论文"])["icon"]
+    return get_genre_config(genre)["icon"]
 
 def get_genre_tips(genre):
-    return GENRE_CONFIG.get(genre, GENRE_CONFIG["议论文"])["writing_tips"]
+    return get_genre_config(genre)["writing_tips"]
 
 
 # ============================================================
